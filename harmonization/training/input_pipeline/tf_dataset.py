@@ -22,14 +22,13 @@ def datasets_from_tfrecords(records_ref, records_src, buf_size_ref, buf_sizes_sr
     
     dsSrcs = [TFRecordDataset(records, compression_type=compression_type, num_parallel_reads=AUTOTUNE).shuffle(buf_size)
                  for records,buf_size in zip(records_src, buf_sizes_src)]
-    datasets = [Dataset.zip(dsRef, ds).repeat() for ds in dsSrcs]
+    # datasets = [Dataset.zip(dsRef, ds).repeat() for ds in dsSrcs]
+    datasets = [Dataset.zip((dsRef, ds)).repeat() for ds in dsSrcs]
     datasets = [ds.map(lambda t1, t2: (augmentation(parse_single_example(t1, keys_to_feature)['mri']),
                                        augmentation(parse_single_example(t2, keys_to_feature)['mri'])),
                        num_parallel_calls=AUTOTUNE, deterministic=False) for ds in datasets]
     return [ds.batch(batch_size, num_parallel_calls=AUTOTUNE, deterministic=False).prefetch(AUTOTUNE).__iter__() for ds in datasets]
-    
-    
-    
+
 def datasets_from_tfrecords_biasSampling(records_entries, batch_size=1, compression_type='GZIP'):
     """
     Creates Tensorflow datasets from Tensorflow records with bias sampling. The shape of the MR images must correspond to the IMAGE_SHAPE global variable.
