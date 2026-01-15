@@ -7,10 +7,13 @@ from skimage.metrics import structural_similarity
 
 
 # ===================== 核心配置（需根据实际路径修改） =====================
-MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/iguane_weights.h5"  # 现有模型权重路径
+# MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/iguane_weights.h5"  # 现有模型权重路径
+MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/my_train_SALD-ABIDE-IXI3/latest_genUniv.h5"  # 现有模型权重路径
 VAL_DATA_PATH = "/home/lengjingcheng/codes/iguane_harmonization/data/ON-Harmony/preprocessed/"  # 验证集路径
 TARGET_SHAPE = (160, 192, 160)  # 模型输入标准尺寸
+# iguane_weights.h5 输出：✅ 验证完成：有效图像对660组 | 平均SSIM=0.9296
 
+# my_train_SALD-ABIDE-IXI3/latest_genUniv.h5 : ✅ 验证完成：有效图像对660组 | 平均SSIM=0.8986
 # ===================== 辅助函数：加载验证数据 =====================
 def load_core_validation_data(val_data_path):
     """加载预处理后的验证集图像及受试者ID"""

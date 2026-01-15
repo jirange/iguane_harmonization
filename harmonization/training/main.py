@@ -12,7 +12,13 @@ from json import dump as json_dump
 # 放在所有 import 最后即可
 import os, datetime
 import tensorflow as tf
-
+import nibabel as nib
+import tensorflow as tf
+from skimage.metrics import structural_similarity
+import re
+import json
+import gc
+import tensorflow as tf
 #################INPUT DATASETS#########################
 from input_pipeline.tf_dataset import datasets_from_tfrecords, datasets_from_tfrecords_biasSampling
 # dataset_pairs = # TO DEFINE
@@ -42,7 +48,7 @@ records_ref = ["/home/lengjingcheng/datasets/tfrecords/SALD_Unkonw_preprocessed.
 # ]
 
 records_src = [
-    ["/home/lengjingcheng/datasets/tfrecords/ixi_source_Guys.records.gz"],  # 源域1：IXI-Guys 322
+    ["/home/lengjingcheng/datasets/tfrecords/ixi_Guys_preprocessed.records.gz" ],  # 源域1：IXI-Guys 322
     ["/home/lengjingcheng/datasets/tfrecords/traveler_src_ABIDEII-KKI_1.records.gz"],    # 源域2：ABIDE II-KKI_1 211
     ["/home/lengjingcheng/datasets/tfrecords/traveler_ref_ses-1.records.gz"]    # 源域3： ABIDE 后面 600~1112=512
 ]
@@ -50,7 +56,7 @@ records_src = [
 #     "/home/lengjingcheng/datasets/tfrecords/ixi_source_Guys.records.gz",  # 源域1：IXI-Guys
 # ]
 # Shuffle缓冲区大小（建议为对应数据集样本数的50%）
-buf_size_ref = 250  # SALD目标域总样本数≈600 → 缓冲区300（可根据实际样本数调整）
+buf_size_ref = 100  # SALD目标域总样本数≈600 → 缓冲区300（可根据实际样本数调整）
 # buf_sizes_src = [150, 100, 50]  # 对应Guys、HH、IOP三家医院的缓冲区
 buf_sizes_src=[100,100,100]
 # 批次大小（3D MRI显存限制，建议=1）
@@ -87,11 +93,40 @@ else:
 
 
 ##########INPUT PARAMETERS################
-DEST_DIR_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/my_train_on-harmony"
+DEST_DIR_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/my_train_SALD-ABIDE-IXI3-check"
 # TO DEFINE # 模型/日志保存路径
 N_EPOCHS = 100  # 总训练轮数
 STEPS_PER_EPOCH = 200  # 每轮训练步数（按批次算）
 
+SAVE_EVERY = 10  # 每 10  epoch 存一次最新权重
+LATEST_GEN_PATH = DEST_DIR_PATH + '/latest_genUniv.h5'
+
+
+CKPT_JSON = os.path.join(DEST_DIR_PATH, 'ckpt.json')
+
+def save_checkpoint(epoch, step_counter, best_score, record_dict):
+    meta = {'epoch': epoch, 'step_counter': step_counter,
+            'best_score': best_score, 'record_dict': record_dict}
+    with open(CKPT_JSON, 'w') as f:
+        json_dump(meta, f, indent=2)
+
+def try_load_checkpoint():
+    if not os.path.exists(CKPT_JSON):
+        return 1, 0, None, {}          # 从头训练
+    with open(CKPT_JSON) as f:
+        meta = json.load(f)
+    epoch0 = meta['epoch'] + 1        # 从下一个 epoch 开始
+    step_counter = meta['step_counter']
+    best_score = meta['best_score']
+    record_dict = meta['record_dict']
+    # 恢复最新权重
+    gen_univ.load_weights(LATEST_GEN_PATH)
+    for i in range(len(dataset_pairs)):
+        gens_bwd[i].load_weights(f"{DEST_DIR_PATH}/latest_genBwd_{i+1}.h5")
+        discs_bwd[i].load_weights(f"{DEST_DIR_PATH}/latest_discBwd_{i+1}.h5")
+        discs_ref[i].load_weights(f"{DEST_DIR_PATH}/latest_discRef_{i+1}.h5")
+    print(f'[checkpoint loaded] resume from epoch {epoch0}')
+    return epoch0, step_counter, best_score, record_dict
 
 # Instancitation of the generators and the discriminators
 import sys
@@ -178,8 +213,10 @@ def load_core_validation_data():
     val_data_path = "/home/lengjingcheng/codes/iguane_harmonization/data/ON-Harmony/preprocessed/"  # 提前划分的核心验证集路径
     val_imgs = []
     val_sub_ids = []
+    # paths = os.listdir(val_data_path)
+    paths = sorted(os.listdir(val_data_path))[:20]
     # 遍历验证集文件，加载图像和对应的受试者ID
-    for file_name in os.listdir(val_data_path):
+    for file_name in paths:
         if file_name.endswith(".nii.gz"):
             # 加载NIfTI图像
             img = nib.load(os.path.join(val_data_path, file_name)).get_fdata()
@@ -230,31 +267,114 @@ discTrainers_src = [Discriminator_trainer(discs_bwd[i], gens_bwd[i], discOptimiz
 DISC_N_BATCHS = 2 # number of batches to train the discriminators
 # 判别器每次训练的批次数量（先训练判别器，稳定GAN）
 indices_sites = np.arange(len(dataset_pairs))
+# def train_step(step_counter):
+#     np.random.shuffle(indices_sites)  # 打乱站点顺序，避免训练偏向
+#     results = {'genFwd_idLoss':0}
+#     for idSite in indices_sites:
+#         # 加载判别器训练的批次（DISC_N_BATCHS*2批：一半训判别器，一半留作生成器训练）
+#         batchs = tf_concat([dataset_pairs[idSite].get_next() for _ in range(DISC_N_BATCHS*2)], axis=1)
+#         imagesRef = batchs[0]
+#         imagesSrc = batchs[1]
+
+#         # 1. 训练判别器（先训判别器，GAN训练的稳定技巧）
+#         results[f"discRef_{idSite+1}_loss"] = discTrainers_ref[idSite].train(imagesRef[DISC_N_BATCHS:], imagesSrc[DISC_N_BATCHS:])
+#         results[f"discSrc_{idSite+1}_loss"] = discTrainers_src[idSite].train(imagesSrc[:DISC_N_BATCHS], imagesRef[:DISC_N_BATCHS])
+#         # 2. 训练生成器（用新批次，避免判别器数据泄露）
+#         batchRef, batchSrc = dataset_pairs[idSite].get_next()
+
+#         (results[f'genFwd_adv_loss_{idSite+1}'], results[f'genBwd_adv_loss_{idSite+1}'], results[f'cycle_loss_refSref_{idSite+1}'],
+#          results[f'cycle_loss_srcRsrc_{idSite+1}'], genFwd_idLoss, results[f'genBwd_idLoss_{idSite+1}']) = genTrainers[idSite].train(batchSrc, batchRef)
+#         results['genFwd_idLoss'] += (genFwd_idLoss/len(dataset_pairs))
+#     #  ======== 新增TensorBoard：每 step 写一次 ========
+#     with train_summary_writer.as_default():
+#         for k, v in results.items():
+#             tf.summary.scalar(k, v.numpy(), step=step_counter)
+
+#     return results
+
+# --- 1. 定义核心静态图训练函数 ---
+@tf.function
+def site_train_step_graph(img_ref_disc, img_src_disc, img_ref_gen, img_src_gen, 
+                          d_trainer_ref, d_trainer_src, g_trainer):
+    """
+    这是显存回收的关键！所有的梯度计算都在这个静态图中完成。
+    只接收数据和具体的 trainer 实例
+    """
+    print(">>> 警告：正在编译（Tracing）计算图，如果每个 Step 都看到这行，说明内存泄漏就在这！")
+    # 直接调用传入的 trainer 实例
+    # 训练判别器
+    # 注意：这里假设你的 trainer.train 是用 tf.GradientTape 写的
+    loss_disc_ref = d_trainer_ref.train(img_ref_disc, img_src_disc)
+    loss_disc_src = d_trainer_src.train(img_src_disc, img_ref_disc)
+    # 训练生成器
+    losses_gen = g_trainer.train(img_src_gen, img_ref_gen)
+    # 返回所有损失，TF 会将其包装成张量
+    
+    return loss_disc_ref, loss_disc_src, losses_gen
+
+# --- 2. 修改调度函数 (Python 逻辑层) ---
 def train_step(step_counter):
-    np.random.shuffle(indices_sites)  # 打乱站点顺序，避免训练偏向
-    results = {'genFwd_idLoss':0}
+    np.random.shuffle(indices_sites)
+    results = {'genFwd_idLoss': 0.0}
+    
     for idSite in indices_sites:
-        # 加载判别器训练的批次（DISC_N_BATCHS*2批：一半训判别器，一半留作生成器训练）
-        batchs = tf_concat([dataset_pairs[idSite].get_next() for _ in range(DISC_N_BATCHS*2)], axis=1)
-        imagesRef = batchs[0]
-        imagesSrc = batchs[1]
+        # 获取数据 (保持不变)
+        # batchs = tf_concat([dataset_pairs[idSite].get_next() for _ in range(DISC_N_BATCHS*2)], axis=1)
+        # img_ref_disc, img_src_disc = batchs[0][DISC_N_BATCHS:], batchs[1][DISC_N_BATCHS:]
+        # batch_ref_gen, batch_src_gen = dataset_pairs[idSite].get_next()
 
-        # 1. 训练判别器（先训判别器，GAN训练的稳定技巧）
-        results[f"discRef_{idSite+1}_loss"] = discTrainers_ref[idSite].train(imagesRef[DISC_N_BATCHS:], imagesSrc[DISC_N_BATCHS:])
-        results[f"discSrc_{idSite+1}_loss"] = discTrainers_src[idSite].train(imagesSrc[:DISC_N_BATCHS], imagesRef[:DISC_N_BATCHS])
-        # 2. 训练生成器（用新批次，避免判别器数据泄露）
-        batchRef, batchSrc = dataset_pairs[idSite].get_next()
+        # # --- 关键修改：在 Python 侧通过 idSite 取出 trainer 对象 --- for TypeError: list indices must be integers or slices, not Tensor
+        # current_d_ref_trainer = discTrainers_ref[idSite]
+        # current_d_src_trainer = discTrainers_src[idSite]
+        # current_g_trainer = genTrainers[idSite]
 
-        (results[f'genFwd_adv_loss_{idSite+1}'], results[f'genBwd_adv_loss_{idSite+1}'], results[f'cycle_loss_refSref_{idSite+1}'],
-         results[f'cycle_loss_srcRsrc_{idSite+1}'], genFwd_idLoss, results[f'genBwd_idLoss_{idSite+1}']) = genTrainers[idSite].train(batchSrc, batchRef)
-        results['genFwd_idLoss'] += (genFwd_idLoss/len(dataset_pairs))
-    #  ======== 新增TensorBoard：每 step 写一次 ========
+        # # 将具体的 trainer 对象传入静态图
+        # d_ref_l, d_src_l, g_ls = site_train_step_graph(
+        #     img_ref_disc, img_src_disc, batch_ref_gen, batch_src_gen,
+        #     current_d_ref_trainer, current_d_src_trainer, current_g_trainer
+        # )
+
+        # 直接获取 Tensor，不要合并，减少内存副本
+        # 判别器需要的 2 组数据
+        d_ref_1 = dataset_pairs[idSite].get_next()[0]
+        d_src_1 = dataset_pairs[idSite].get_next()[1]
+        
+        # 生成器需要的 1 组数据
+        g_ref, g_src = dataset_pairs[idSite].get_next()
+
+        # 传入静态图
+        d_ref_l, d_src_l, g_ls = site_train_step_graph(
+            d_ref_1, d_src_1, g_ref, g_src,
+            discTrainers_ref[idSite], discTrainers_src[idSite], genTrainers[idSite]
+        )
+
+        # C. 核心修复：立即将 Tensor 转为标量 (float)
+        # 这样 results 字典里存的是 Python 数字，而不是持有计算图引用的 Tensor 对象
+        results[f"discRef_{idSite+1}_loss"] = float(d_ref_l)
+        results[f"discSrc_{idSite+1}_loss"] = float(d_src_l)
+        
+        # 拆解生成器损失 (假设返回的是列表/元组)
+        results[f'genFwd_adv_loss_{idSite+1}'] = float(g_ls[0])
+        results[f'genBwd_adv_loss_{idSite+1}'] = float(g_ls[1])
+        results[f'cycle_loss_refSref_{idSite+1}'] = float(g_ls[2])
+        results[f'cycle_loss_srcRsrc_{idSite+1}'] = float(g_ls[3])
+        
+        id_loss_fwd = float(g_ls[4])
+        results[f'genBwd_idLoss_{idSite+1}'] = float(g_ls[5])
+        
+        results['genFwd_idLoss'] += (id_loss_fwd / len(dataset_pairs))
+
+        del d_ref_1, d_src_1, g_ref, g_src, d_ref_l, d_src_l, g_ls
+        gc.collect() # 强制清理
+
+    # D. 写入 TensorBoard (已经在外部处理，这里只需确保值是数字)
     with train_summary_writer.as_default():
         for k, v in results.items():
-            tf.summary.scalar(k, v.numpy(), step=step_counter)
+            tf.summary.scalar(k, v, step=step_counter)
+    # 每个 Step 结束后手动清理垃圾
+    gc.collect()    
 
     return results
-
 
 # ======== TensorBoard：创建 summary writer  ========
 log_dir = os.path.join(DEST_DIR_PATH, "logs",
@@ -265,19 +385,25 @@ step_counter = 0          # 全局步数
 
 # Training execution
 BEST_GEN_PATH = DEST_DIR_PATH+'/best_genUniv.h5'
-record_dict = {} # 记录每轮的平均损失
-best_score = None # 最优验证分数（保存最优模型）
+# 原来这三行
+# record_dict = {} # 记录每轮的平均损失
+# best_score = None # 最优验证分数（保存最优模型）
+# for epoch in range(1,N_EPOCHS+1):
+import ctypes
+# 改成下面 4 行
+start_epoch, step_counter, best_score, record_dict = try_load_checkpoint()
+for epoch in range(start_epoch, N_EPOCHS+1):
 
-for epoch in range(1,N_EPOCHS+1):
     tmp_record = {}  # 临时记录当前轮的损失累加
     for step in range(1,STEPS_PER_EPOCH+1):
         res = train_step(step_counter)
         step_counter += 1 # 新加逻辑，为了tensorboard
 
         if not tmp_record:
-            for key in res.keys(): tmp_record[key] = res[key].numpy()
+            # 修复点：直接赋值，不要调用 .numpy() AttributeError: 'float' object has no attribute 'numpy'
+            for key in res.keys(): tmp_record[key] = res[key]
         else:
-            for key in res.keys(): tmp_record[key] += res[key].numpy()
+            for key in res.keys(): tmp_record[key] += res[key]
         
         log = f"End step {step}/{STEPS_PER_EPOCH} époque {epoch}/{N_EPOCHS} | "
         for k in sorted(res.keys()): log += f"{k} = {res[k]:.4f},  "
@@ -302,7 +428,23 @@ for epoch in range(1,N_EPOCHS+1):
         log += f"{key} : {value[-1]:.4f}, "
     print(log+' '*20)
     print()
-    
+
+    save_checkpoint(epoch, step_counter, best_score, record_dict)   # 新增
+    # ========== 新增：定时保存最新权重 ==========
+    if epoch % SAVE_EVERY == 0:
+        # 1. 先清理内存，释放临时张量
+        tf.keras.backend.clear_session()
+        gc.collect()
+        gen_univ.save_weights(LATEST_GEN_PATH)
+        for i in range(len(dataset_pairs)):
+            gens_bwd[i].save_weights(f"{DEST_DIR_PATH}/latest_genBwd_{i+1}.h5")
+            discs_bwd[i].save_weights(f"{DEST_DIR_PATH}/latest_discBwd_{i+1}.h5")
+            discs_ref[i].save_weights(f"{DEST_DIR_PATH}/latest_discRef_{i+1}.h5")
+            # 每保存一组就清理一次内存
+            gc.collect()
+            tf.keras.backend.clear_session()
+        print(f'[latest weights saved at epoch {epoch}]')
+
     if epoch % EVAL_FREQ == 0:
         score = eval_model()
         print(f"Validation function, score = {score:.3f}")
@@ -310,7 +452,13 @@ for epoch in range(1,N_EPOCHS+1):
             best_score=score
             gen_univ.save_weights(BEST_GEN_PATH)
             print('New best model saved')
-            
+    # 每个 Epoch 结束时调用    
+    tf.keras.backend.clear_session()
+    gc.collect()
+    try:
+        ctypes.CDLL('libc.so.6').malloc_trim(0) # 强制释放系统内存
+    except:
+        pass            
             
 # Saving of all the models
 gen_univ.save_weights(DEST_DIR_PATH+'/generator_univ.h5')

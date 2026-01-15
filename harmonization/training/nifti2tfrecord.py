@@ -158,6 +158,7 @@ def split_ixi_by_hospital(ixi_root):
     }
     # 遍历IXI所有T1文件
     for file in os.listdir(ixi_root):
+        print(file)
         if not file.endswith(".nii.gz"):
             continue
         file_path = os.path.join(ixi_root, file)
@@ -309,15 +310,15 @@ if __name__ == "__main__":
 
     # ===================== IXI =====================
     # # 2. 拆分并转换IXI（分三家医院作为源域）
-    # ixi_hospitals = split_ixi_by_hospital("/home/lengjingcheng/codes/iguane_harmonization/data/IXI/preprocessed")
-    # for hospital, files in ixi_hospitals.items():
-    #     if not files:
-    #         continue
-    #     ixi_tfr = os.path.join(out_dir, f"ixi_{hospital}_preprocessed.records.gz")
-    #     write_nifti_to_tfrecord(files, ixi_tfr)
+    ixi_hospitals = split_ixi_by_hospital(ixi_root="/home/lengjingcheng/codes/iguane_harmonization/data/IXI/preprocessed")
+    for hospital, files in ixi_hospitals.items():
+        if not files:
+            continue
+        ixi_tfr = os.path.join(out_dir, f"ixi_{hospital}_preprocessed.records.gz")
+        write_nifti_to_tfrecord(files, ixi_tfr)
 
     # ===================== SALD =====================
     # 1. 转换SALD（目标域，统一为一个TFRecord）
-    batch_convert_traveler("/home/lengjingcheng/codes/iguane_harmonization/data/SALD/preprocessed", out_dir,name="SALD")
+    # batch_convert_traveler("/home/lengjingcheng/codes/iguane_harmonization/data/SALD/preprocessed", out_dir,name="SALD")
 
     
