@@ -4,16 +4,28 @@ import re
 import nibabel as nib
 import tensorflow as tf
 from skimage.metrics import structural_similarity
-
+from tqdm import tqdm
 
 # ===================== 核心配置（需根据实际路径修改） =====================
 # MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/iguane_weights.h5"  # 现有模型权重路径
-MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/my_train_SALD-ABIDE-IXI3/latest_genUniv.h5"  # 现有模型权重路径
+MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/my_train_sald-ixi2-abide2/latest_genUniv.h5"  # 现有模型权重路径
 VAL_DATA_PATH = "/home/lengjingcheng/codes/iguane_harmonization/data/ON-Harmony/preprocessed/"  # 验证集路径
 TARGET_SHAPE = (160, 192, 160)  # 模型输入标准尺寸
-# iguane_weights.h5 输出：✅ 验证完成：有效图像对660组 | 平均SSIM=0.9296
 
-# my_train_SALD-ABIDE-IXI3/latest_genUniv.h5 : ✅ 验证完成：有效图像对660组 | 平均SSIM=0.8986
+# 0.8950 my_train_sald-ixi-abide-100epoch/latest_genUniv.h5
+# 0.8998 my_train_sald-ixi-abide-100epoch/best_genUniv.h5
+# 0.9296 iguane_weights.h5   论文权重
+
+# 0.8759 my_train_sald-ixi-check/latest_genUniv.h5 （60 epoch）
+
+# 0.9483 my_train/best_genUniv.h5   ?????为啥这么高，不会是因为弄成全黑的了所以高吧？
+# 0.8754 my_train2/best_genUniv.h5
+# 0.9331 20个epoch 的 my_train_sald-ixi2-abide2/latest_genUniv.h5  为什么这么高，和全黑同理？看一下真实图片吧
+
+
+# 0.9335 my_train_sald-ixi2-abide2  好高，是因为变成四个list了吗
+
+# 如何验证是不是有SALD风格呢？如何验证是否有生物保真性呢？？
 # ===================== 辅助函数：加载验证数据 =====================
 def load_core_validation_data(val_data_path):
     """加载预处理后的验证集图像及受试者ID"""
@@ -58,7 +70,7 @@ def eval_model(gen_univ, val_data_path):
     # 2. 生成协调后图像（冻结生成器）
     gen_univ.trainable = False
     harmonized_imgs = []
-    for img in val_imgs:
+    for img in tqdm(val_imgs):
         # 预处理（与训练逻辑一致）
         mask = img > 0
         img_norm = img / 500 - 1  # 强度归一化
@@ -80,7 +92,7 @@ def eval_model(gen_univ, val_data_path):
     ssim_scores = []
     unique_subs = np.unique(val_sub_ids)
     print(len(unique_subs),unique_subs)
-    for sub_id in unique_subs:
+    for sub_id in tqdm(unique_subs):
         sub_harmonized = [h for h, sid in zip(harmonized_imgs, val_sub_ids) if sid == sub_id]
         if len(sub_harmonized) < 2:
             continue
