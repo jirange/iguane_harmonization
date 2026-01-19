@@ -17,26 +17,17 @@ def datasets_from_tfrecords(records_ref, records_src, buf_size_ref, buf_sizes_sr
       - a list of infinite Tensorflow dataset iterators. Each one is associated to a source dataset and yields one batch with images from the reference dataset and images from the source dataset
     """
     keys_to_feature = {'mri': FixedLenFeature(shape=IMAGE_SHAPE, dtype='float32')}
-    dsRef = TFRecordDataset(records_ref, compression_type=compression_type, num_parallel_reads=1)
+    dsRef = TFRecordDataset(records_ref, compression_type=compression_type, num_parallel_reads=AUTOTUNE)
     dsRef = dsRef.shuffle(buf_size_ref)
     
-    dsSrcs = [TFRecordDataset(records, compression_type=compression_type, num_parallel_reads=1).shuffle(buf_size)
+    dsSrcs = [TFRecordDataset(records, compression_type=compression_type, num_parallel_reads=AUTOTUNE).shuffle(buf_size)
                  for records,buf_size in zip(records_src, buf_sizes_src)]
     # datasets = [Dataset.zip(dsRef, ds).repeat() for ds in dsSrcs]
     datasets = [Dataset.zip((dsRef, ds)).repeat() for ds in dsSrcs]
-    # datasets = [ds.map(lambda t1, t2: (augmentation(parse_single_example(t1, keys_to_feature)['mri']),
-    #                                    augmentation(parse_single_example(t2, keys_to_feature)['mri'])),
-    #                    num_parallel_calls=AUTOTUNE, deterministic=False) for ds in datasets]
-    # return [ds.batch(batch_size, num_parallel_calls=AUTOTUNE, deterministic=False).prefetch(AUTOTUNE).__iter__() for ds in datasets]
-    # 对于 3D 数据，一个 Batch（1张图）解压后可能占用几百 MB 到 1GB。AUTOTUNE 会根据 CPU 速度尝试预取尽可能多的 Batch。
-    # 将 num_parallel_calls 全部从 AUTOTUNE 改为 1
     datasets = [ds.map(lambda t1, t2: (augmentation(parse_single_example(t1, keys_to_feature)['mri']),
-                                    augmentation(parse_single_example(t2, keys_to_feature)['mri'])),
-                    num_parallel_calls=1, # 强制串行，不开启额外缓冲区
-                    deterministic=False) for ds in datasets]
-    # 修改 datasets_from_tfrecords 的最后一行
-    return [ds.batch(batch_size, num_parallel_calls=1, deterministic=False).prefetch(1).__iter__() for ds in datasets]
-
+                                       augmentation(parse_single_example(t2, keys_to_feature)['mri'])),
+                       num_parallel_calls=AUTOTUNE, deterministic=False) for ds in datasets]
+    return [ds.batch(batch_size, num_parallel_calls=AUTOTUNE, deterministic=False).prefetch(AUTOTUNE).__iter__() for ds in datasets]
 
 def datasets_from_tfrecords_biasSampling(records_entries, batch_size=1, compression_type='GZIP'):
     """
