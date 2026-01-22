@@ -8,13 +8,14 @@ from tqdm import tqdm
 
 # ===================== 核心配置（需根据实际路径修改） =====================
 # MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/iguane_weights.h5"  # 现有模型权重路径
-MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/my_train_sald-ixi2-abide2/latest_genUniv.h5"  # 现有模型权重路径
-VAL_DATA_PATH = "/home/lengjingcheng/codes/iguane_harmonization/data/ON-Harmony/preprocessed/"  # 验证集路径
+MODEL_WEIGHTS_PATH = "/home/lengjingcheng/codes/iguane_harmonization/harmonization/my_train_sald-ixi-abide-100epoch/best_genUniv.h5"  # 现有模型权重路径
+# VAL_DATA_PATH = "/home/lengjingcheng/codes/iguane_harmonization/data/ON-Harmony/preprocessed/"  # 验证集路径
+VAL_DATA_PATH = "/nas/ljc/SRPBS_TS/preprocessed/"  # 验证集路径
 TARGET_SHAPE = (160, 192, 160)  # 模型输入标准尺寸
 
 # 0.8950 my_train_sald-ixi-abide-100epoch/latest_genUniv.h5
 # 0.8998 my_train_sald-ixi-abide-100epoch/best_genUniv.h5
-# 0.9296 iguane_weights.h5   论文权重
+# 0.9296 iguane_weights.h5   论文权重   0.9252 0.0044  
 
 # 0.8759 my_train_sald-ixi-check/latest_genUniv.h5 （60 epoch）
 
@@ -23,7 +24,13 @@ TARGET_SHAPE = (160, 192, 160)  # 模型输入标准尺寸
 # 0.9331 20个epoch 的 my_train_sald-ixi2-abide2/latest_genUniv.h5  为什么这么高，和全黑同理？看一下真实图片吧
 
 
-# 0.9335 my_train_sald-ixi2-abide2  好高，是因为变成四个list了吗
+# 0.9335 my_train_sald-ixi2-abide2  好高，是因为变成四个list了吗  0.9252   0.0083
+
+# iguane_weights.h5: 最终验证结果：跨站点SSIM均值 = (0.9107870531411447, 0.9108073729488664)
+# my_train_sald-ixi2-abide2      跨站点SSIM均值 = (0.9107870531411447, 0.835291971243021)
+# my_train_sald-ixi-abide-100epoch/best_genUniv.h5 0.8749108255028624
+# 预处理图像平均SSIM=0.9108（有效图像对：1035）
+# 协调后图像平均SSIM=0.8353（有效图像对：1035）
 
 # 如何验证是不是有SALD风格呢？如何验证是否有生物保真性呢？？
 # ===================== 辅助函数：加载验证数据 =====================
@@ -56,6 +63,35 @@ def load_core_validation_data(val_data_path):
             val_sub_ids.append(sub_id)
     return np.array(val_imgs), val_sub_ids
 
+# ===================== 核心函数：计算SSIM =====================
+def calculate_subject_ssim(images_list, subject_ids):
+    """计算同一受试者跨站点的SSIM均值"""
+    ssim_scores = []
+    unique_subs = np.unique(subject_ids)
+    
+    for sub_id in tqdm(unique_subs, desc="计算SSIM"):
+        # 获取该受试者的所有图像
+        sub_images = [img for img, sid in zip(images_list, subject_ids) if sid == sub_id]
+        if len(sub_images) < 2:
+            continue
+        
+        # 遍历所有图像对
+        for i in range(len(sub_images)):
+            for j in range(i+1, len(sub_images)):
+                # 使用99百分位数作为动态范围
+                max_val = np.percentile(np.concatenate([
+                    sub_images[i].ravel(), 
+                    sub_images[j].ravel()
+                ]), 99)
+                
+                ssim_val = structural_similarity(
+                    sub_images[i], sub_images[j],
+                    data_range=max_val, win_size=7, multichannel=False
+                )
+                ssim_scores.append(ssim_val)
+    
+    return np.mean(ssim_scores) if ssim_scores else 0.0, len(ssim_scores)
+
 # ===================== 核心验证函数 =====================
 def eval_model(gen_univ, val_data_path):
     """加载验证集→模型推理→计算SSIM均值"""
@@ -67,49 +103,72 @@ def eval_model(gen_univ, val_data_path):
         print("⚠️ 未加载到任何验证图像")
         return 0.0
     
+    preprocessed_ssim=0
+    # # 2. 计算原始预处理图像的SSIM
+    # print("\n" + "="*50)
+    # print("📊 正在计算预处理图像的SSIM...")
+    # print("="*50)
+    # preprocessed_ssim, pre_pairs = calculate_subject_ssim(val_imgs, val_sub_ids)
+    # print(f"✅ 预处理图像平均SSIM={preprocessed_ssim:.4f}（有效图像对：{pre_pairs}）\n")
+    
+
     # 2. 生成协调后图像（冻结生成器）
     gen_univ.trainable = False
     harmonized_imgs = []
     for img in tqdm(val_imgs):
+        # print(f'[debug] gold  {img.min():.1f} ~ {img.max():.1f}')
+
         # 预处理（与训练逻辑一致）
         mask = img > 0
-        img_norm = img / 500 - 1  # 强度归一化
+        # img_norm = img / 500 - 1  # 强度归一化
+        img_norm = img - 1  # 强度归一化
         img_norm[~mask] = 0
         
         # 模型推理
         img_input = np.expand_dims(img_norm, axis=(0, 4))  # [1,160,192,160,1]
         img_tensor = tf.convert_to_tensor(img_input, dtype='float32')
         harmonized = gen_univ(img_tensor, training=False).numpy().squeeze()
-        
+        # print(f'[debug] harm {harmonized.min():.1f} ~ {harmonized.max():.1f}')
+
         # 后处理
-        harmonized = (harmonized + 1) * 500
+        # harmonized = (harmonized + 1) * 500
+        harmonized = harmonized + 1
         harmonized[~mask] = 0
         harmonized = np.maximum(harmonized, 0)
+        # print(f'[debug] harm {harmonized.min():.1f} ~ {harmonized.max():.1f}')
+
         harmonized_imgs.append(harmonized)
     gen_univ.trainable = True
 
-    # 3. 计算同一受试者跨站点SSIM均值
-    ssim_scores = []
-    unique_subs = np.unique(val_sub_ids)
-    print(len(unique_subs),unique_subs)
-    for sub_id in tqdm(unique_subs):
-        sub_harmonized = [h for h, sid in zip(harmonized_imgs, val_sub_ids) if sid == sub_id]
-        if len(sub_harmonized) < 2:
-            continue
-        # 遍历该受试者所有图像对
-        for i in range(len(sub_harmonized)):
-            for j in range(i+1, len(sub_harmonized)):
-                max_val = np.percentile(np.concatenate([sub_harmonized[i].ravel(), sub_harmonized[j].ravel()]), 99)
-                ssim_val = structural_similarity(
-                    sub_harmonized[i], sub_harmonized[j],
-                    data_range=max_val, win_size=7, multichannel=False
-                )
-                ssim_scores.append(ssim_val)
+    # # 3. 计算同一受试者跨站点SSIM均值
+    # ssim_scores = []
+    # unique_subs = np.unique(val_sub_ids)
+    # print(len(unique_subs),unique_subs)
+    # for sub_id in tqdm(unique_subs):
+    #     sub_harmonized = [h for h, sid in zip(harmonized_imgs, val_sub_ids) if sid == sub_id]
+    #     if len(sub_harmonized) < 2:
+    #         continue
+    #     # 遍历该受试者所有图像对
+    #     for i in range(len(sub_harmonized)):
+    #         for j in range(i+1, len(sub_harmonized)):
+    #             max_val = np.percentile(np.concatenate([sub_harmonized[i].ravel(), sub_harmonized[j].ravel()]), 99)
+    #             ssim_val = structural_similarity(
+    #                 sub_harmonized[i], sub_harmonized[j],
+    #                 data_range=max_val, win_size=7, multichannel=False
+    #             )
+    #             ssim_scores.append(ssim_val)
     
-    # 4. 返回SSIM均值
-    avg_ssim = np.mean(ssim_scores) if ssim_scores else 0.0
-    print(f"\n✅ 验证完成：有效图像对{len(ssim_scores)}组 | 平均SSIM={avg_ssim:.4f}")
-    return avg_ssim
+    # # 4. 返回SSIM均值
+    # avg_ssim = np.mean(ssim_scores) if ssim_scores else 0.0
+    # print(f"\n✅ 验证完成：有效图像对{len(ssim_scores)}组 | 平均SSIM={avg_ssim:.4f}")
+    # return avg_ssim
+
+
+    # 4. 计算协调后图像的SSIM
+    harmonized_ssim, harm_pairs = calculate_subject_ssim(harmonized_imgs, val_sub_ids)
+    print(f"✅ 协调后图像平均SSIM={harmonized_ssim:.4f}（有效图像对：{harm_pairs}）\n")
+    
+    return preprocessed_ssim, harmonized_ssim
 
 # ===================== 主执行逻辑 =====================
 if __name__ == "__main__":
@@ -127,4 +186,4 @@ if __name__ == "__main__":
     avg_ssim = eval_model(gen_univ, VAL_DATA_PATH)
     
     # 3. 输出结果
-    print(f"\n📊 最终验证结果：跨站点SSIM均值 = {avg_ssim:.4f}")
+    print(f"\n📊 {MODEL_WEIGHTS_PATH} 最终验证结果：跨站点SSIM均值 = {avg_ssim}")
